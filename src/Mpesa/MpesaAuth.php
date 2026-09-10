@@ -31,11 +31,17 @@ class MpesaAuth
             return $this->cachedToken;
         }
 
-        $response = $this->httpClient->request('GET', '/oauth/v1/generate?grant_type=client_credentials', [
+        $response = $this->httpClient->request('GET', '/oauth/v1/generate', [
+            'query' => [
+                'grant_type' => 'client_credentials',
+            ],
+            'auth' => [
+                $this->config->getConsumerKey(), 
+                $this->config->getConsumerSecret()
+            ],
             'headers' => [
-                'Authorization' => 'Basic ' . base64_encode(
-                    $this->config->getConsumerKey() . ':' . $this->config->getConsumerSecret()
-                ),
+                'Accept' => 'application/json',
+                'Content-Type' => 'application/json; charset=utf8',
             ],
         ]);
 

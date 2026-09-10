@@ -159,12 +159,12 @@ class MpesaGateway implements GatewayInterface
     public function registerC2BUrls(string $confirmationUrl, string $validationUrl, string $responseType = 'Completed'): array {
         $payload = [
             'ShortCode'       => $this->config->getShortcode(),
-            'ResponseType'    => $responseType,
+            'ResponseType'    => strtolower($responseType),
             'ConfirmationURL' => $confirmationUrl,
             'ValidationURL'   => $validationUrl,
         ];
 
-        return $this->request('POST', '/mpesa/c2b/v1/registerurl', $payload);
+        return $this->request('POST', '/mpesa/c2b/v2/registerurl', $payload);
     }
     
     /**
