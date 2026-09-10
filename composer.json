@@ -1,9 +1,10 @@
 {
     "name": "xfix/xfix-pay",
     "description": "Unified PHP SDK for XfixPay - M-Pesa, PayPal, Banks, StreamPay",
+    "keywords": ["xfix", "xfixpay", "mpesa", "paypal", "banks", "streampay"],
     "type": "library", 
     "license": "MIT",
-    "version": "1.0.8",
+    "version": "1.0.0",
     "require": {
         "php": "^7.4 || ^8.0",
         "guzzlehttp/guzzle": "^7.0",
