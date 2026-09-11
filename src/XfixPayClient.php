@@ -29,8 +29,8 @@ class XfixPayClient
     //     => $this->makeGateway('bank', $config, BankGateway::class);
     // public function stripe(array $config = []): StripeGateway
     //     => $this->makeGateway('stripe', $config, StripeGateway::class);
-    // public function streamPay(array $config = []): StreamPayGateway
-    //     => $this->makeGateway('streamPay', $config, StreamPayGateway::class);
+    // public function streamPay(array $config = []): XfixPayGateway
+    //     => $this->makeGateway('streamPay', $config, XfixPayGateway::class);
 
     /**
      * Generic gateway factory with config merging and instance caching.

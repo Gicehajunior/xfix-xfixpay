@@ -354,7 +354,7 @@ The following gateways are planned for future releases:
 * **PayPal** — REST API
 * **Stripe** — Stripe API / Connect
 * **Bank Transfers** — Equity, KCB, and other supported banks
-* **StreamPay** — Stablecoin and digital-asset payments
+* **XfixPay** — Stablecoin and digital-asset payments
 
 Gateway availability depends on implementation status and the relevant provider's API requirements.
 
