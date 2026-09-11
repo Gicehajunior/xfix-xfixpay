@@ -2,27 +2,28 @@
 
 require_once __DIR__ . '/../vendor/autoload.php';
 
+$dotenv = Dotenv\Dotenv::createImmutable(__DIR__ . '/../');
+$dotenv->load(); 
+
 use Xfix\XfixPay\XfixPayClient;
 
 $client = new XfixPayClient();
 
 $mpesa = $client->mpesa([
-    'consumer_key'       => 'YOUR_CONSUMER_KEY',
-    'consumer_secret'    => 'YOUR_CONSUMER_SECRET',
-    'passkey'            => 'YOUR_PASSKEY',
-    'shortcode'          => '174379', // Paybill/Till
-    'initiator'          => 'apitest',
-    'initiator_password' => 'YourInitiatorPassword',
-    'environment'        => 'sandbox', // or 'live'
+    'consumer_key'       => $_ENV['MPESA_CONSUMER_KEY'],
+    'consumer_secret'    => $_ENV['MPESA_CONSUMER_SECRET'],
+    'passkey'            => $_ENV['MPESA_PASSKEY'],
+    'shortcode'          => $_ENV['MPESA_SHORTCODE'], // Paybill/Till 
+    'environment'        => $_ENV['MPESA_ENVIRONMENT'] ?? 'sandbox', // or 'live'
 ]);
 
 // 1. Request STK Push
 $response = $mpesa->requestSTKPush(
-    phoneNumber: '254722336262',
+    phoneNumber: '254719462331',
     amount: 1.00,
-    accountReference: 'INV-001',
+    accountReference: 'INV-2026-004',
     transactionDesc: 'Test Payment',
-    callbackUrl: 'https://your-server.com/mpesa/callback'
+    callbackUrl: 'https://alkalize-sequester-proximity.ngrok-free.dev/xfixpay/confirmation'
 );
 
 print_r($response);
