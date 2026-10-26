@@ -15,6 +15,7 @@ XfixPay currently supports **M-Pesa in Kenya**, with additional payment provider
 * Transaction reversals
 * Automatic M-Pesa OAuth token management and caching
 * Automatic encryption of Safaricom security credentials
+* Pesapal payment gateway integration
 * PSR-4 autoloading
 * PSR-12 compatible codebase
 * Extensible gateway architecture
@@ -443,6 +444,7 @@ For example:
 
 ```text
 src/Mpesa/
+src/Pesapal/
 src/PayPal/
 src/Stripe/
 src/Bank/
