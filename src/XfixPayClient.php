@@ -3,6 +3,7 @@
 namespace Xfix\XfixPay;
 
 use Xfix\XfixPay\Mpesa\MpesaGateway;
+use Xfix\XfixPay\Pesapal\PesapalGateway;
 
 class XfixPayClient
 {
@@ -22,6 +23,11 @@ class XfixPayClient
         return $this->makeGateway('mpesa', $config, MpesaGateway::class);
     }
 
+    public function pesapal(array $config = []): PesapalGateway
+    {
+        return $this->makeGateway('pesapal', $config, PesapalGateway::class);
+    }
+
     // Future gateways:
     // public function paypal(array $config = []): PayPalGateway
     //     => $this->makeGateway('paypal', $config, PayPalGateway::class);
@@ -29,9 +35,7 @@ class XfixPayClient
     //     => $this->makeGateway('bank', $config, BankGateway::class);
     // public function stripe(array $config = []): StripeGateway
     //     => $this->makeGateway('stripe', $config, StripeGateway::class);
-    // public function streamPay(array $config = []): XfixPayGateway
-    //     => $this->makeGateway('streamPay', $config, XfixPayGateway::class);
-
+    
     /**
      * Generic gateway factory with config merging and instance caching.
      *
