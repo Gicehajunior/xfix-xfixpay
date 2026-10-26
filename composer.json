@@ -4,7 +4,7 @@
     "keywords": ["xfix", "xfixpay", "mpesa", "paypal", "banks", "xfixpay"],
     "type": "library", 
     "license": "MIT",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "require": {
         "php": "^7.4 || ^8.0",
         "guzzlehttp/guzzle": "^7.0",
