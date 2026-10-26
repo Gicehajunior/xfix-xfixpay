@@ -97,4 +97,48 @@ class PesapalGateway implements GatewayInterface
             ],
         ]);
     }
+
+    public function registerIPN(string $ipnUrl): array
+    {
+        return $this->request('POST', '/URLSetup/RegisterIPN', [
+            'query' => [
+                'ipnUrl' => $ipnUrl,
+            ],
+        ]);
+    }
+
+    public function submitOrder(float $amount, string $currency, string $description, string $callbackUrl, string $billingAddress = '', string $deliveryAddress = ''): array
+    {
+        return $this->request('POST', '/Transactions/SubmitOrderRequest', [
+            'query' => [
+                'amount'       => $amount,
+                'currency'     => $currency,
+                'description'  => $description,
+                'callbackUrl'  => $callbackUrl,
+                'billingAddress' => $billingAddress,
+                'deliveryAddress' => $deliveryAddress,
+            ],
+        ]);
+    }
+
+    public function requestRefund(string $orderTrackingId, float $amount = 0, string $remarks = 'Refund'): array
+    {
+        return $this->request('POST', '/Transactions/RefundRequest', [
+            'query' => [
+                'orderTrackingId' => $orderTrackingId,
+                'amount'          => $amount > 0 ? $amount : 0,
+                'remarks'         => $remarks,
+            ],
+        ]);
+    }
+
+    public function cancelOrder(string $orderTrackingId, string $remarks = 'Order cancelled'): array
+    {
+        return $this->request('POST', '/Transactions/CancelOrder', [
+            'query' => [
+                'orderTrackingId' => $orderTrackingId,
+                'remarks'         => $remarks,
+            ],
+        ]);
+    }
 }
