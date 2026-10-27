@@ -1,17 +1,18 @@
 # XfixPay Pesapal SDK Documentation
 
 ## Overview
+
 This module provides Pesapal payment gateway integration for the XfixPay SDK. All Pesapal-specific logic is isolated under `src/Pesapal/`.
 
 ## Method Mapping
 
-| XfixPay Method | Pesapal Endpoint | HTTP | Purpose |
-|----------------|------------------|------|---------|
-| `registerIPN($ipnUrl)` | `/URLSetup/RegisterIPN` | POST | Register IPN URL, get ipn_id |
-| `submitOrder($amount, $currency, $description, $callbackUrl, $billingAddress, $deliveryAddress)` | `/Transactions/SubmitOrderRequest` | POST | Create payment, get redirect_url |
-| `getTransactionStatus($orderTrackingId)` | `/Transactions/GetTransactionStatus` | GET | Verify payment outcome |
-| `requestRefund($orderTrackingId, $amount, $remarks)` | `/Transactions/RefundRequest` | POST | Request refund for completed payment |
-| `cancelOrder($orderTrackingId, $remarks)` | `/Transactions/CancelOrder` | POST | Cancel pending/failed order |
+| XfixPay Method                                                                                     | Pesapal Endpoint                       | HTTP | Purpose                              |
+| -------------------------------------------------------------------------------------------------- | -------------------------------------- | ---- | ------------------------------------ |
+| `registerIPN($ipnUrl)`                                                                           | `/URLSetup/RegisterIPN`              | POST | Register IPN URL, get ipn_id         |
+| `submitOrder($amount, $currency, $description, $callbackUrl, $billingAddress, $deliveryAddress)` | `/Transactions/SubmitOrderRequest`   | POST | Create payment, get redirect_url     |
+| `getTransactionStatus($orderTrackingId)`                                                         | `/Transactions/GetTransactionStatus` | GET  | Verify payment outcome               |
+| `requestRefund($orderTrackingId, $amount, $remarks)`                                             | `/Transactions/RefundRequest`        | POST | Request refund for completed payment |
+| `cancelOrder($orderTrackingId, $remarks)`                                                        | `/Transactions/CancelOrder`          | POST | Cancel pending/failed order          |
 
 ## Configuration
 

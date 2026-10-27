@@ -2,7 +2,7 @@
 
 A unified PHP SDK for integrating with multiple payment gateways through a consistent, extensible API.
 
-XfixPay currently supports **M-Pesa in Kenya**, with additional payment providers planned, including PayPal, Stripe, bank transfers, and other payment services.
+XfixPay currently supports **M-Pesa in Kenya** and **Pesapal payment gateway**, with additional payment providers planned, including PayPal, Stripe, bank transfers, and other payment services.
 
 ## Features
 
@@ -244,6 +244,104 @@ $reversal = $mpesa->reversal(
 ```
 
 Use transaction reversals carefully and only when the transaction meets Safaricom's reversal requirements.
+
+---
+
+---
+
+# Pesapal Usage
+
+## 1. Register IPN URL
+
+Register an IPN (Instant Payment Notification) URL to receive payment status updates.
+
+```php
+$response = $pesapal->registerIPN('https://your-server.com/ipn-handler');
+$ipnId = $response['ipn_id'] ?? null;
+```
+
+### Important Parameters
+
+* `ipnUrl` - Callback URL that receives payment status notifications
+
+---
+
+## 2. Submit Order
+
+Initiate a payment request and get a redirect URL.
+
+```php
+$response = $pesapal->submitOrder(
+    amount: 100.00,
+    currency: 'KES',
+    description: 'Order #123',
+    callbackUrl: 'https://your-server.com/callback',
+    billingAddress: 'Customer Billing',
+    deliveryAddress: 'Customer Delivery'
+);
+$redirectUrl = $response['redirect_url'] ?? null;
+$orderTrackingId = $response['order_tracking_id'] ?? null;
+```
+
+### Important Parameters
+
+* `amount` - Payment amount
+* `currency` - Currency code (e.g., KES)
+* `description` - Order description
+* `callbackUrl` - URL called after payment
+* `billingAddress` - Customer billing address
+* `deliveryAddress` - Customer delivery address
+* `redirectUrl` - Payment redirect URL from Pesapal
+* `orderTrackingId` - Order tracking ID for status queries
+
+---
+
+## 3. Check Transaction Status
+
+Verify the outcome of a payment.
+
+```php
+$status = $pesapal->getTransactionStatus($orderTrackingId);
+
+if ($status['status'] === 'completed') {
+    // Payment successful
+}
+```
+
+### Important Parameters
+
+* `orderTrackingId` - Order tracking ID from submitOrder response
+
+---
+
+## 4. Request Refund
+
+Request a refund for a completed payment.
+
+```php
+$refund = $pesapal->requestRefund($orderTrackingId, 100.00, 'Customer requested refund');
+```
+
+### Important Parameters
+
+* `orderTrackingId` - Order tracking ID
+* `amount` - Refund amount (0 for full refund)
+* `remarks` - Refund remarks/message
+
+---
+
+## 5. Cancel Order
+
+Cancel a pending or failed order.
+
+```php
+$cancel = $pesapal->cancelOrder($orderTrackingId, 'Order cancelled by customer');
+```
+
+### Important Parameters
+
+* `orderTrackingId` - Order tracking ID
+* `remarks` - Cancellation reason
 
 ---
 
