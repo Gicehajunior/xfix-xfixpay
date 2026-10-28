@@ -69,6 +69,7 @@ class PesapalGateway implements GatewayInterface
                 $options['json'] = $data;
             }
 
+            $endpoint = ltrim($endpoint, '/');
             $response = $this->httpClient->request($method, $endpoint, $options);
 
             $body = $response->getBody()->getContents();

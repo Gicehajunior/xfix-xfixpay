@@ -31,7 +31,7 @@ class PesapalAuth
             return $this->cachedToken;
         }
 
-        $response = $this->httpClient->request('POST', '/api/Auth/RequestToken', [
+        $response = $this->httpClient->request('POST', 'api/Auth/RequestToken', [
             'headers' => [
                 'Accept'       => 'application/json',
                 'Content-Type' => 'application/json',
