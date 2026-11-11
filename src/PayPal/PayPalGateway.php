@@ -204,6 +204,106 @@ class PayPalGateway implements GatewayInterface
     }
 
     /**
+     * Fetch the status of a PayPal transaction (order or capture) by ID.
+     *
+     * The response is normalized to match the shape expected by the
+     * GatewayCallbackController:
+     *   error                => null or ['message','code','error_type']
+     *   payment_status_description => 'COMPLETED'|'CREATED'|'APPROVED'|...
+     *   status_code          => 1 for completed, 0 otherwise
+     *   payment_method       => 'paypal'
+     *   confirmation_code    => capture id (or order id if no capture)
+     *   amount               => float
+     *   currency             => string (e.g. 'USD')
+     *   created_date         => ISO-8601 string
+     *   payment_account      => payer email (or null)
+     *   account_number       => payer email (or null)
+     *   merchant_reference   => purchase unit reference_id (or null)
+     *
+     * @param string $transactionId PayPal order ID or capture ID
+     * @return array
+     * @throws PayPalException
+     */
+    public function getTransactionStatus(string $transactionId): array
+    {
+        if ($transactionId === '') {
+            throw new PayPalException('transactionId is required.');
+        }
+
+        // Try fetching as an order first.
+        $order = $this->getOrder($transactionId);
+
+        $status          = strtoupper((string) ($order['status'] ?? ''));
+        $purchaseUnits   = $order['purchase_units'] ?? [];
+        $firstUnit       = $purchaseUnits[0] ?? [];
+        $amountObj       = $firstUnit['amount'] ?? [];
+        $amount          = (float) ($amountObj['value'] ?? 0);
+        $currency        = strtoupper((string) ($amountObj['currency_code'] ?? 'USD'));
+        $merchantRef     = $firstUnit['reference_id'] ?? null;
+        $createdDate     = $order['create_time'] ?? null;
+        $isCompleted     = $status === 'COMPLETED';
+
+        $confirmationCode = null;
+        $payerEmail       = null;
+
+        if ($isCompleted) {
+            // Try to extract capture details from the order's payments array.
+            $payments = $firstUnit['payments'] ?? [];
+            $captures = $payments['captures'] ?? [];
+            if (!empty($captures)) {
+                $capture = $captures[0];
+                $confirmationCode = $capture['id'] ?? null;
+                // Fall back to order-level payer info for email.
+            }
+
+            // If we still don't have a confirmation code, try fetching the capture directly
+            // in case $transactionId was actually a capture ID.
+            if ($confirmationCode === null) {
+                try {
+                    $capture = $this->request('GET', 'v2/payments/captures/' . rawurlencode($transactionId));
+                    $confirmationCode = $capture['id'] ?? $transactionId;
+                    $payerEmail       = $capture['payer']['email_address'] ?? null;
+                    $amount           = (float) ($capture['amount']['value'] ?? $amount);
+                    $currency         = strtoupper((string) ($capture['amount']['currency_code'] ?? $currency));
+                    $createdDate      = $capture['create_time'] ?? $createdDate;
+                } catch (PayPalException $e) {
+                    // Not a capture ID; fall back to order-level data.
+                }
+            }
+        }
+
+        // Extract payer email from order-level payer info if not yet set.
+        if ($payerEmail === null) {
+            $payerEmail = $order['payer']['email_address'] ?? null;
+        }
+
+        $statusDesc = $isCompleted ? 'COMPLETED' : $status;
+        $statusCode = $isCompleted ? 1 : 0;
+
+        $this->logger->info('PayPal transaction status fetched', [
+            'transaction_id' => $transactionId,
+            'status'         => $statusDesc,
+            'amount'         => $amount,
+            'currency'       => $currency,
+        ]);
+
+        return [
+            'error'                     => [],
+            'payment_status_description'=> $statusDesc,
+            'status_code'               => $statusCode,
+            'payment_method'            => 'paypal',
+            'confirmation_code'         => $confirmationCode ?: $transactionId,
+            'amount'                    => $amount,
+            'currency'                  => $currency,
+            'created_date'              => $createdDate,
+            'payment_account'           => $payerEmail,
+            'account_number'            => $payerEmail,
+            'merchant_reference'        => $merchantRef,
+            'full_response'             => $order,
+        ];
+    }
+
+    /**
      * Capture an approved order (intent = CAPTURE).
      */
     public function captureOrder(string $orderId): array
