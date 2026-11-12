@@ -16,6 +16,23 @@ class PayPalGateway implements GatewayInterface
     private Client $httpClient;
     private LoggerInterface $logger;
 
+    /**
+     * Merchant that receives the funds (platform / partner model).
+     *
+     * When the authenticated PayPal account is a platform/partner account,
+     * PayPal requires an explicit `payee` on every purchase unit. When the
+     * account is a standalone merchant, these may stay null and PayPal
+     * defaults the payee to the authenticated account.
+     */
+    private ?string $merchantId = null;
+    private ?string $merchantEmail = null;
+
+    /**
+     * Disbursement mode for platform payments: INSTANT (default) or DELAYED.
+     * Only emitted when a merchant_id is configured.
+     */
+    private string $disbursementMode = 'INSTANT';
+
     /* --------------------------------------------------------------------- */
     /* Setup                                                                  */
     /* --------------------------------------------------------------------- */
@@ -24,6 +41,10 @@ class PayPalGateway implements GatewayInterface
     {
         $this->config = new PayPalConfig($config);
         $this->auth   = new PayPalAuth($this->config);
+
+        $this->merchantId       = $this->normalizeNullableString($config['merchant_id']       ?? null);
+        $this->merchantEmail    = $this->normalizeNullableString($config['merchant_email']    ?? null);
+        $this->disbursementMode = $this->normalizeDisbursementMode($config['disbursement_mode'] ?? 'INSTANT');
 
         $this->httpClient = new Client([
             'base_uri'        => $this->config->getBaseUrl() . '/',
@@ -41,6 +62,23 @@ class PayPalGateway implements GatewayInterface
     public function setLogger(LoggerInterface $logger): self
     {
         $this->logger = $logger;
+        return $this;
+    }
+
+    /**
+     * Set the payee (platform/partner model) after construction.
+     * Pass a merchant_id OR an email; merchant_id wins when both are given.
+     */
+    public function setPayee(?string $merchantId, ?string $merchantEmail = null): self
+    {
+        $this->merchantId    = $this->normalizeNullableString($merchantId);
+        $this->merchantEmail = $this->normalizeNullableString($merchantEmail);
+        return $this;
+    }
+
+    public function setDisbursementMode(string $mode): self
+    {
+        $this->disbursementMode = $this->normalizeDisbursementMode($mode);
         return $this;
     }
 
@@ -105,6 +143,8 @@ class PayPalGateway implements GatewayInterface
      *   - landing_page 'LOGIN'|'BILLING'|'NO_PREFERENCE'
      *   - user_action  'CONTINUE'|'PAY_NOW'
      *   - items        array of item arrays (name, quantity, unit_amount, currency)
+     *   - merchant_id    string  Override the configured payee merchant ID
+     *   - merchant_email string  Override the configured payee email
      *
      * @return array
      */
@@ -145,6 +185,28 @@ class PayPalGateway implements GatewayInterface
             $purchaseUnit['items'] = $items;
         }
 
+        // -----------------------------------------------------------------
+        // Payee (platform / partner model).
+        //
+        // When the authenticated account is a platform account, PayPal
+        // rejects live order creation with 422 UNPROCESSABLE_ENTITY and
+        // PAYEE_ACCOUNT_INVALID on /purchase_units/@payee unless an
+        // explicit payee is supplied. Per-call overrides (via $data) win
+        // over the payee configured on the gateway instance.
+        // -----------------------------------------------------------------
+        $payee = $this->resolvePayee($data);
+        if (!empty($payee)) {
+            $purchaseUnit['payee'] = $payee;
+
+            // Optional but recommended for platform-model payments so
+            // settlement to the merchant is explicit.
+            if ($this->disbursementMode !== '') {
+                $purchaseUnit['payment_instruction'] = [
+                    'disbursement_mode' => $this->disbursementMode,
+                ];
+            }
+        }
+
         $payload = [
             'intent'         => strtoupper($data['intent'] ?? 'CAPTURE'),
             'purchase_units' => [$purchaseUnit],
@@ -172,6 +234,7 @@ class PayPalGateway implements GatewayInterface
         $this->logger->info('PayPal order created', [
             'order_id' => $response['id'],
             'status'   => $response['status'] ?? null,
+            'payee'    => $purchaseUnit['payee'] ?? null,
         ]);
 
         return [
@@ -590,6 +653,56 @@ class PayPalGateway implements GatewayInterface
     /* --------------------------------------------------------------------- */
     /* Helpers                                                                */
     /* --------------------------------------------------------------------- */
+
+    /**
+     * Resolve the payee object for a purchase unit.
+     *
+     * Precedence:
+     *   1. Per-call overrides in $data['merchant_id'] / $data['merchant_email']
+     *   2. Gateway-instance config (merchantId / merchantEmail)
+     *
+     * When a merchant_id is present, an email is dropped — PayPal treats
+     * merchant_id as authoritative and rejects mixed/incoherent payees.
+     *
+     * @return array Empty array when no payee is configured (standalone
+     *               merchant — PayPal defaults the payee to the caller).
+     */
+    private function resolvePayee(array $data): array
+    {
+        $merchantId = $this->normalizeNullableString($data['merchant_id'] ?? null)
+            ?? $this->merchantId;
+
+        $merchantEmail = $this->normalizeNullableString($data['merchant_email'] ?? null)
+            ?? $this->merchantEmail;
+
+        if ($merchantId !== null) {
+            return ['merchant_id' => $merchantId];
+        }
+
+        if ($merchantEmail !== null) {
+            return ['email_address' => $merchantEmail];
+        }
+
+        return [];
+    }
+
+    private function normalizeNullableString($value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $value = trim((string) $value);
+
+        return $value === '' ? null : $value;
+    }
+
+    private function normalizeDisbursementMode($mode): string
+    {
+        $mode = strtoupper(trim((string) $mode));
+
+        return in_array($mode, ['INSTANT', 'DELAYED'], true) ? $mode : 'INSTANT';
+    }
 
     /**
      * Return the href of the first link matching $rel, or null.
