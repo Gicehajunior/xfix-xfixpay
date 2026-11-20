@@ -14,7 +14,14 @@ class MpesaGateway implements GatewayInterface
 
     private Client $httpClient;
 
+    private ?Client $injectedHttpClient;
+
     private ?string $cachedSecurityCredential = null;
+
+    public function __construct(?Client $httpClient = null)
+    {
+        $this->injectedHttpClient = $httpClient;
+    }
 
     /**
      * Configure the gateway with an associative array.
@@ -24,10 +31,10 @@ class MpesaGateway implements GatewayInterface
      * - consumer_secret
      * - passkey (for STK Push)
      * - shortcode (Paybill or Till)
-     * - initiator (for B2C, Balance, Reversal)
-     * - initiator_password (for B2C, Balance, Reversal)
+     * - initiator (for B2C, B2B, Balance, Reversal, Transaction Status)
+     * - initiator_password (for B2C, B2B, Balance, Reversal, Transaction Status)
      * - environment ('sandbox' or 'live')
-     * - cert_path (optional, required for B2C/Balance/Reversal)
+     * - cert_path (optional, required for initiator-based operations)
      *
      * @param array $config
      * @return self
@@ -36,12 +43,11 @@ class MpesaGateway implements GatewayInterface
     {
         $this->config = new MpesaConfig($config);
 
-        $this->auth = new MpesaAuth($this->config);
-
-        $this->httpClient = new Client([
+        $this->httpClient = $this->injectedHttpClient ?: new Client([
             'base_uri' => $this->config->getBaseUrl(),
             'timeout'  => 30,
         ]);
+        $this->auth = new MpesaAuth($this->config, $this->httpClient);
 
         return $this;
     }
@@ -85,9 +91,16 @@ class MpesaGateway implements GatewayInterface
             ]);
 
             $body = $response->getBody()->getContents();
+            $decoded = json_decode($body, true);
 
-            return json_decode($body, true) ?: [];
-        } catch (\Exception $e) {
+            if (json_last_error() !== JSON_ERROR_NONE || !is_array($decoded)) {
+                throw new MpesaException('Safaricom returned an invalid JSON response.');
+            }
+
+            return $decoded;
+        } catch (MpesaException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
             throw new MpesaException($e->getMessage(), $e->getCode(), $e);
         }
     }
@@ -102,7 +115,20 @@ class MpesaGateway implements GatewayInterface
      * @param string $callbackUrl      HTTPS endpoint for payment notification
      * @return array Response from Safaricom (includes CheckoutRequestID)
      */
-    public function requestSTKPush(string $phoneNumber, float $amount, string $accountReference, string $transactionDesc, string $callbackUrl): array {
+    public function requestSTKPush(
+        string $phoneNumber,
+        float $amount,
+        string $accountReference,
+        string $transactionDesc,
+        string $callbackUrl,
+        string $transactionType = 'CustomerPayBillOnline'
+    ): array {
+        $amount = $this->validateAmount($amount);
+        $callbackUrl = $this->validateCallbackUrl($callbackUrl);
+        if (!in_array($transactionType, ['CustomerPayBillOnline', 'CustomerBuyGoodsOnline'], true)) {
+            throw new \InvalidArgumentException('Unsupported STK Push transaction type.');
+        }
+
         $timestamp = date('YmdHis');
         $password = base64_encode(
             $this->config->getShortcode() . $this->config->getPasskey() . $timestamp
@@ -112,8 +138,8 @@ class MpesaGateway implements GatewayInterface
             'BusinessShortCode' => $this->config->getShortcode(),
             'Password'          => $password,
             'Timestamp'         => $timestamp,
-            'TransactionType'   => 'CustomerPayBillOnline',
-            'Amount'            => (int) round($amount),
+            'TransactionType'   => $transactionType,
+            'Amount'            => $amount,
             'PartyA'            => $this->normalizePhone($phoneNumber),
             'PartyB'            => $this->config->getShortcode(),
             'PhoneNumber'       => $this->normalizePhone($phoneNumber),
@@ -124,6 +150,55 @@ class MpesaGateway implements GatewayInterface
 
         return $this->request('POST', '/mpesa/stkpush/v1/processrequest', $payload);
     }
+
+    /**
+     * Request a customer deposit using STK Push.
+     *
+     * The wallet should only be credited after the server receives and verifies
+     * Safaricom's asynchronous callback.
+     */
+    public function deposit(
+        string $phoneNumber,
+        float $amount,
+        string $accountReference,
+        string $transactionDesc,
+        string $callbackUrl,
+        string $transactionType = 'CustomerPayBillOnline'
+    ): array {
+        return $this->requestSTKPush(
+            $phoneNumber,
+            $amount,
+            $accountReference,
+            $transactionDesc,
+            $callbackUrl,
+            $transactionType
+        );
+    }
+
+    /**
+     * Send a B2C business payment commonly used to refund a customer.
+     *
+     * This is a new payment to the customer's phone, not a reversal of the
+     * original M-Pesa receipt. Use reverseTransaction() for provider reversals.
+     */
+    public function refundToPhone(
+        string $phoneNumber,
+        float $amount,
+        string $remarks = 'Refund',
+        string $occasion = '',
+        ?string $resultUrl = null,
+        ?string $queueTimeOutUrl = null
+    ): array {
+        return $this->sendB2C(
+            $phoneNumber,
+            $amount,
+            'BusinessPayment',
+            $remarks,
+            $occasion,
+            $resultUrl,
+            $queueTimeOutUrl
+        );
+    }
     
     /**
      * Query the status of an STK Push transaction.
@@ -133,6 +208,11 @@ class MpesaGateway implements GatewayInterface
      */
     public function querySTKStatus(string $checkoutRequestId): array
     {
+        $checkoutRequestId = trim($checkoutRequestId);
+        if ($checkoutRequestId === '') {
+            throw new \InvalidArgumentException('Checkout request ID is required.');
+        }
+
         $timestamp = date('YmdHis');
         $password = base64_encode(
             $this->config->getShortcode() . $this->config->getPasskey() . $timestamp
@@ -157,9 +237,17 @@ class MpesaGateway implements GatewayInterface
      * @return array Response (includes ConversationID, OriginatorCoversationID)
      */
     public function registerC2BUrls(string $confirmationUrl, string $validationUrl, string $responseType = 'Completed'): array {
+        $confirmationUrl = $this->validateCallbackUrl($confirmationUrl);
+        $validationUrl = $this->validateCallbackUrl($validationUrl);
+        $responseType = ucfirst(strtolower(trim($responseType)));
+
+        if (!in_array($responseType, ['Completed', 'Canceled'], true)) {
+            throw new \InvalidArgumentException('Response type must be Completed or Canceled.');
+        }
+
         $payload = [
             'ShortCode'       => $this->config->getShortcode(),
-            'ResponseType'    => strtolower($responseType),
+            'ResponseType'    => $responseType,
             'ConfirmationURL' => $confirmationUrl,
             'ValidationURL'   => $validationUrl,
         ];
@@ -178,23 +266,140 @@ class MpesaGateway implements GatewayInterface
      * @return array Response (includes ConversationID, OriginatorCoversationID)
      * @throws MpesaException if certificate path is missing/invalid
      */
-    public function sendB2C(string $phoneNumber, float $amount, string $command = 'SalaryPayment', string $remarks = 'Payment', string $occasion = ''): array {
+    public function sendB2C(
+        string $phoneNumber,
+        float $amount,
+        string $command = 'SalaryPayment',
+        string $remarks = 'Payment',
+        string $occasion = '',
+        ?string $resultUrl = null,
+        ?string $queueTimeOutUrl = null
+    ): array {
+        $amount = $this->validateAmount($amount);
+        $phoneNumber = $this->normalizePhone($phoneNumber);
+
+        if (!in_array($command, ['SalaryPayment', 'BusinessPayment', 'PromotionPayment'], true)) {
+            throw new \InvalidArgumentException('Unsupported B2C command.');
+        }
+
+        $resultUrl = $this->resolveCallbackUrl($resultUrl, 'b2c_result_url');
+        $queueTimeOutUrl = $this->resolveCallbackUrl($queueTimeOutUrl, 'b2c_timeout_url');
         $securityCredential = $this->getSecurityCredential();
 
         $payload = [
             'InitiatorName'      => $this->config->getInitiator(),
             'SecurityCredential' => $securityCredential,
             'CommandID'          => $command,
-            'Amount'             => (int) round($amount),
+            'Amount'             => $amount,
             'PartyA'             => $this->config->getShortcode(),
-            'PartyB'             => $this->normalizePhone($phoneNumber),
+            'PartyB'             => $phoneNumber,
             'Remarks'            => $remarks,
-            'QueueTimeOutURL'    => $this->config->getBaseUrl() . '/b2c/timeout', // Replace with your own
-            'ResultURL'          => $this->config->getBaseUrl() . '/b2c/result',
+            'QueueTimeOutURL'    => $queueTimeOutUrl,
+            'ResultURL'          => $resultUrl,
             'Occasion'           => $occasion,
         ];
 
         return $this->request('POST', '/mpesa/b2c/v1/paymentrequest', $payload);
+    }
+
+    /**
+     * Request a withdrawal from the configured business shortcode to a phone.
+     */
+    public function withdraw(
+        string $phoneNumber,
+        float $amount,
+        string $remarks = 'Withdrawal',
+        string $occasion = '',
+        ?string $resultUrl = null,
+        ?string $queueTimeOutUrl = null
+    ): array {
+        return $this->sendB2C(
+            $phoneNumber,
+            $amount,
+            'BusinessPayment',
+            $remarks,
+            $occasion,
+            $resultUrl,
+            $queueTimeOutUrl
+        );
+    }
+
+    /**
+     * Send a B2B payment from the configured shortcode to another shortcode.
+     */
+    public function sendB2B(
+        string $receiverShortcode,
+        float $amount,
+        string $accountReference,
+        string $remarks = 'Transfer',
+        string $command = 'BusinessPayBill',
+        string $senderIdentifierType = '4',
+        string $receiverIdentifierType = '4',
+        ?string $resultUrl = null,
+        ?string $queueTimeOutUrl = null
+    ): array {
+        $amount = $this->validateAmount($amount);
+        $receiverShortcode = trim($receiverShortcode);
+        $accountReference = trim($accountReference);
+
+        if ($receiverShortcode === '' || !ctype_digit($receiverShortcode)) {
+            throw new \InvalidArgumentException('Receiver shortcode must contain digits only.');
+        }
+        if ($accountReference === '') {
+            throw new \InvalidArgumentException('Account reference is required.');
+        }
+        if (!in_array((string) $senderIdentifierType, ['1', '2', '4'], true)
+            || !in_array((string) $receiverIdentifierType, ['1', '2', '4'], true)) {
+            throw new \InvalidArgumentException('Identifier type must be 1, 2, or 4.');
+        }
+
+        $resultUrl = $this->resolveCallbackUrl($resultUrl, 'b2b_result_url');
+        $queueTimeOutUrl = $this->resolveCallbackUrl($queueTimeOutUrl, 'b2b_timeout_url');
+        $securityCredential = $this->getSecurityCredential();
+
+        $payload = [
+            'Initiator'              => $this->config->getInitiator(),
+            'SecurityCredential'     => $securityCredential,
+            'CommandID'              => $command,
+            'SenderIdentifierType'   => (string) $senderIdentifierType,
+            'RecieverIdentifierType' => (string) $receiverIdentifierType,
+            'Amount'                 => $amount,
+            'PartyA'                 => $this->config->getShortcode(),
+            'PartyB'                 => $receiverShortcode,
+            'AccountReference'       => $accountReference,
+            'Remarks'                => $remarks,
+            'QueueTimeOutURL'        => $queueTimeOutUrl,
+            'ResultURL'              => $resultUrl,
+        ];
+
+        return $this->request('POST', '/mpesa/b2b/v1/paymentrequest', $payload);
+    }
+
+    /**
+     * Transfer funds to another PayBill or Till through the B2B API.
+     */
+    public function transfer(
+        string $receiverShortcode,
+        float $amount,
+        string $accountReference,
+        string $remarks = 'Transfer',
+        string $command = 'BusinessPayBill',
+        string $senderIdentifierType = '4',
+        string $receiverIdentifierType = '4',
+        ?string $resultUrl = null,
+        ?string $queueTimeOutUrl = null
+    ): array {
+        return $this->sendB2B(
+            $receiverShortcode,
+            $amount,
+            $accountReference,
+            $remarks,
+            $command,
+            $senderIdentifierType,
+            $receiverIdentifierType,
+            $resultUrl,
+            $queueTimeOutUrl
+        );
     }
     
     /**
@@ -205,8 +410,19 @@ class MpesaGateway implements GatewayInterface
      * @return array Response (includes ConversationID, OriginatorCoversationID)
      * @throws MpesaException if certificate path is missing/invalid
      */
-    public function balanceInquiry(string $partyA = null, string $identifierType = '4'): array
+    public function balanceInquiry(
+        ?string $partyA = null,
+        string $identifierType = '4',
+        ?string $resultUrl = null,
+        ?string $queueTimeOutUrl = null
+    ): array
     {
+        if (!in_array((string) $identifierType, ['1', '2', '4'], true)) {
+            throw new \InvalidArgumentException('Identifier type must be 1, 2, or 4.');
+        }
+
+        $resultUrl = $this->resolveCallbackUrl($resultUrl, 'balance_result_url');
+        $queueTimeOutUrl = $this->resolveCallbackUrl($queueTimeOutUrl, 'balance_timeout_url');
         $securityCredential = $this->getSecurityCredential();
 
         $payload = [
@@ -216,8 +432,8 @@ class MpesaGateway implements GatewayInterface
             'PartyA'             => $partyA ?? $this->config->getShortcode(),
             'IdentifierType'     => $identifierType,
             'Remarks'            => 'Balance inquiry',
-            'QueueTimeOutURL'    => $this->config->getBaseUrl() . '/balance/timeout',
-            'ResultURL'          => $this->config->getBaseUrl() . '/balance/result',
+            'QueueTimeOutURL'    => $queueTimeOutUrl,
+            'ResultURL'          => $resultUrl,
         ];
 
         return $this->request('POST', '/mpesa/accountbalance/v1/query', $payload);
@@ -232,8 +448,47 @@ class MpesaGateway implements GatewayInterface
      * @return array Response (includes ConversationID, OriginatorCoversationID)
      * @throws MpesaException if certificate path is missing/invalid
      */
-    public function reversal(string $transactionId, float $amount, string $remarks = 'Reversal'): array
-    {
+    public function reversal(
+        string $transactionId,
+        float $amount,
+        string $remarks = 'Reversal',
+        ?string $resultUrl = null,
+        ?string $queueTimeOutUrl = null
+    ): array {
+        return $this->reverseTransaction(
+            $transactionId,
+            $amount,
+            $remarks,
+            $resultUrl,
+            $queueTimeOutUrl
+        );
+    }
+
+    /**
+     * Request reversal of an existing M-Pesa transaction.
+     */
+    public function reverseTransaction(
+        string $transactionId,
+        float $amount,
+        string $remarks = 'Reversal',
+        ?string $resultUrl = null,
+        ?string $queueTimeOutUrl = null,
+        ?string $receiverParty = null,
+        string $receiverIdentifierType = '4',
+        string $occasion = ''
+    ): array {
+        $transactionId = trim($transactionId);
+        if ($transactionId === '') {
+            throw new \InvalidArgumentException('M-Pesa transaction ID is required.');
+        }
+
+        $amount = $this->validateAmount($amount);
+        if (!in_array((string) $receiverIdentifierType, ['1', '2', '4'], true)) {
+            throw new \InvalidArgumentException('Receiver identifier type must be 1, 2, or 4.');
+        }
+
+        $resultUrl = $this->resolveCallbackUrl($resultUrl, 'reversal_result_url');
+        $queueTimeOutUrl = $this->resolveCallbackUrl($queueTimeOutUrl, 'reversal_timeout_url');
         $securityCredential = $this->getSecurityCredential();
 
         $payload = [
@@ -241,15 +496,55 @@ class MpesaGateway implements GatewayInterface
             'SecurityCredential'     => $securityCredential,
             'CommandID'              => 'TransactionReversal',
             'TransactionID'          => $transactionId,
-            'Amount'                 => (int) round($amount),
-            'ReceiverParty'          => $this->config->getShortcode(),
-            'RecieverIdentifierType' => '4', // 4 = Paybill
+            'Amount'                 => $amount,
+            'ReceiverParty'          => $receiverParty ?? $this->config->getShortcode(),
+            'RecieverIdentifierType' => (string) $receiverIdentifierType,
             'Remarks'                => $remarks,
-            'QueueTimeOutURL'        => $this->config->getBaseUrl() . '/reversal/timeout',
-            'ResultURL'              => $this->config->getBaseUrl() . '/reversal/result',
+            'QueueTimeOutURL'        => $queueTimeOutUrl,
+            'ResultURL'              => $resultUrl,
+            'Occasion'               => $occasion,
         ];
 
         return $this->request('POST', '/mpesa/reversal/v1/request', $payload);
+    }
+
+    /**
+     * Query the status of an M-Pesa transaction by its receipt ID.
+     */
+    public function queryTransactionStatus(
+        string $transactionId,
+        ?string $resultUrl = null,
+        ?string $queueTimeOutUrl = null,
+        string $identifierType = '4',
+        string $remarks = 'Transaction status query',
+        string $occasion = ''
+    ): array {
+        $transactionId = trim($transactionId);
+        if ($transactionId === '') {
+            throw new \InvalidArgumentException('M-Pesa transaction ID is required.');
+        }
+        if (!in_array((string) $identifierType, ['1', '2', '4'], true)) {
+            throw new \InvalidArgumentException('Identifier type must be 1, 2, or 4.');
+        }
+
+        $resultUrl = $this->resolveCallbackUrl($resultUrl, 'transaction_status_result_url');
+        $queueTimeOutUrl = $this->resolveCallbackUrl($queueTimeOutUrl, 'transaction_status_timeout_url');
+        $securityCredential = $this->getSecurityCredential();
+
+        $payload = [
+            'Initiator'          => $this->config->getInitiator(),
+            'SecurityCredential' => $securityCredential,
+            'CommandID'          => 'TransactionStatusQuery',
+            'TransactionID'      => $transactionId,
+            'PartyA'             => $this->config->getShortcode(),
+            'IdentifierType'     => (string) $identifierType,
+            'ResultURL'          => $resultUrl,
+            'QueueTimeOutURL'    => $queueTimeOutUrl,
+            'Remarks'            => $remarks,
+            'Occasion'           => $occasion,
+        ];
+
+        return $this->request('POST', '/mpesa/transactionstatus/v1/query', $payload);
     }
     
     /**
@@ -269,12 +564,20 @@ class MpesaGateway implements GatewayInterface
             );
         }
 
-        $pubKey = openssl_pkey_get_public(file_get_contents($certPath));
+        $certificate = file_get_contents($certPath);
+        if ($certificate === false) {
+            throw new MpesaException('Unable to read the Safaricom certificate file.');
+        }
+
+        $pubKey = openssl_pkey_get_public($certificate);
         if (!$pubKey) {
             throw new MpesaException('Invalid certificate file: ' . openssl_error_string());
         }
 
-        openssl_public_encrypt($password, $encrypted, $pubKey);
+        if (!openssl_public_encrypt($password, $encrypted, $pubKey)) {
+            throw new MpesaException('Unable to encrypt the M-Pesa initiator credential.');
+        }
+
         return base64_encode($encrypted);
     }
 
@@ -314,6 +617,45 @@ class MpesaGateway implements GatewayInterface
         if (substr($phone, 0, 3) !== '254') {
             $phone = '254' . $phone;
         }
+
+        if (!preg_match('/^254[17][0-9]{8}$/', $phone)) {
+            throw new \InvalidArgumentException('Phone number must be a valid Kenyan mobile number.');
+        }
+
         return $phone;
+    }
+
+    private function validateAmount(float $amount): int
+    {
+        if (!is_finite($amount) || $amount <= 0 || floor($amount) !== $amount) {
+            throw new \InvalidArgumentException('M-Pesa amount must be a positive whole number.');
+        }
+
+        return (int) $amount;
+    }
+
+    private function validateCallbackUrl(string $url): string
+    {
+        $url = trim($url);
+        $scheme = parse_url($url, PHP_URL_SCHEME);
+
+        if (!filter_var($url, FILTER_VALIDATE_URL) || strtolower((string) $scheme) !== 'https') {
+            throw new \InvalidArgumentException('Safaricom callback URLs must be valid HTTPS URLs.');
+        }
+
+        return $url;
+    }
+
+    private function resolveCallbackUrl(?string $url, string $configKey): string
+    {
+        $url = $url ?: $this->config->getCallbackUrl($configKey);
+
+        if (!$url) {
+            throw new \InvalidArgumentException(
+                sprintf('Callback URL is required; pass it to the method or configure "%s".', $configKey)
+            );
+        }
+
+        return $this->validateCallbackUrl($url);
     }
 }

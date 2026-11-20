@@ -8,11 +8,14 @@ XfixPay currently supports **M-Pesa in Kenya** and **Pesapal payment gateway**, 
 
 * Unified interface for multiple payment gateways
 * M-Pesa STK Push
+* M-Pesa wallet deposits via STK Push
 * STK Push status queries
 * C2B URL registration
 * B2C payments
+* Wallet withdrawals via B2C
+* B2B transfers
 * Account balance inquiries
-* Transaction reversals
+* Transaction status queries and reversals
 * Automatic M-Pesa OAuth token management and caching
 * Automatic encryption of Safaricom security credentials
 * Pesapal payment gateway integration (API 3.0)
@@ -31,7 +34,7 @@ XfixPay currently supports **M-Pesa in Kenya** and **Pesapal payment gateway**, 
 * GuzzleHTTP 7.x or higher
 * OpenSSL PHP extension
 * Safaricom Developer account for M-Pesa integrations
-* Safaricom M-Pesa security certificate (`.cer`) for B2C, Balance Inquiry, and Reversal APIs
+* Safaricom M-Pesa security certificate (`.cer`) for B2C, B2B, balance, reversal and transaction-status APIs
 * Pesapal merchant account for Pesapal integrations
 
 ---
@@ -77,6 +80,16 @@ $mpesa = $client->mpesa([
     'initiator_password' => 'your_initiator_password',
     'environment'        => 'sandbox',
     'cert_path'          => '/path/to/safaricom.cer',
+    'b2c_result_url'     => 'https://your-server.com/mpesa/b2c/result',
+    'b2c_timeout_url'    => 'https://your-server.com/mpesa/b2c/timeout',
+    'b2b_result_url'     => 'https://your-server.com/mpesa/b2b/result',
+    'b2b_timeout_url'    => 'https://your-server.com/mpesa/b2b/timeout',
+    'balance_result_url' => 'https://your-server.com/mpesa/balance/result',
+    'balance_timeout_url' => 'https://your-server.com/mpesa/balance/timeout',
+    'reversal_result_url' => 'https://your-server.com/mpesa/reversal/result',
+    'reversal_timeout_url' => 'https://your-server.com/mpesa/reversal/timeout',
+    'transaction_status_result_url' => 'https://your-server.com/mpesa/transaction-status/result',
+    'transaction_status_timeout_url' => 'https://your-server.com/mpesa/transaction-status/timeout',
 ]);
 ```
 
@@ -88,16 +101,22 @@ Where:
 | `consumer_secret`    | Safaricom Daraja consumer secret              |
 | `passkey`            | Lipa Na M-Pesa Online passkey                 |
 | `shortcode`          | PayBill or Till number                        |
-| `initiator`          | Initiator name for B2C, Balance, and Reversal |
+| `initiator`          | Initiator name for B2C, B2B, balance, reversal and status queries |
 | `initiator_password` | Initiator password                            |
 | `environment`        | `sandbox` or `live`                       |
 | `cert_path`          | Path to the Safaricom`.cer` certificate     |
+| `*_result_url`       | HTTPS endpoint for the operation result callback |
+| `*_timeout_url`      | HTTPS endpoint for the operation timeout callback |
 
-The `cert_path` is required only for:
+The operation callback URLs must be publicly reachable HTTPS URLs. They may be
+passed directly to an operation or configured as shown above. The `cert_path`
+is required for:
 
 * B2C payments
+* B2B transfers
 * Account Balance Inquiry
 * Transaction Reversal
+* Transaction Status Query
 
 The certificate can also be configured after creating the gateway:
 
@@ -161,6 +180,7 @@ Store the `CheckoutRequestID` if you need to query the transaction status later.
 * `accountReference` — Account or invoice reference
 * `transactionDesc` — Transaction description
 * `callbackUrl` — URL that receives the STK callback
+* `transactionType` — `CustomerPayBillOnline` (default) or `CustomerBuyGoodsOnline` for a Till
 
 ---
 
@@ -211,6 +231,7 @@ The validation endpoint can be used to validate incoming transactions before con
 ## 4. B2C Payment
 
 Send money from a business M-Pesa account to a customer's M-Pesa account.
+The configured B2C result and timeout URLs are required.
 
 ```php
 $response = $mpesa->sendB2C(
@@ -234,9 +255,46 @@ The `occasion` parameter is optional.
 
 ---
 
-## 5. Account Balance Inquiry
+## 5. Wallet Withdrawal and Refund
 
-Retrieve the balance of an M-Pesa shortcode.
+`withdraw()` sends a B2C business payment to a customer phone. `refundToPhone()`
+does the same for a refund initiated as a new payment; it is **not** a reversal
+of the original receipt.
+
+```php
+$response = $mpesa->withdraw(
+    phoneNumber: '254722336262',
+    amount: 100,
+    remarks: 'Wallet withdrawal'
+);
+```
+
+The result callback should be used to confirm completion before updating a
+wallet ledger.
+
+---
+
+## 6. B2B Transfer
+
+Send funds from the configured shortcode to another PayBill or Till.
+
+```php
+$response = $mpesa->transfer(
+    receiverShortcode: '600001',
+    amount: 500,
+    accountReference: 'INV-204',
+    remarks: 'Supplier transfer'
+);
+```
+
+The configured B2B result and timeout URLs are required.
+
+---
+
+## 7. Account Balance Inquiry
+
+Retrieve the balance of a PayBill or Till. The configured balance result and
+timeout URLs are required.
 
 ```php
 $balance = $mpesa->balanceInquiry(
@@ -245,21 +303,26 @@ $balance = $mpesa->balanceInquiry(
 );
 ```
 
-When `partyA` is `null`, the configured shortcode is used.
-
-Supported identifier types include:
-
-| Type  | Description |
-| ----- | ----------- |
-| `1` | MSISDN      |
-| `2` | Till Number |
-| `4` | PayBill     |
+When `partyA` is `null`, the configured shortcode is used. Identifier types
+include `1` (MSISDN), `2` (Till) and `4` (PayBill).
 
 ---
 
-## 6. Transaction Reversal
+## 8. Transaction Status Query
+
+Query the status of an M-Pesa transaction by its receipt ID. This is an
+asynchronous request; process its result callback before changing ledger state.
+
+```php
+$status = $mpesa->queryTransactionStatus('LKXXXX1234');
+```
+
+---
+
+## 9. Transaction Reversal
 
 Reverse a completed M-Pesa transaction using its M-Pesa receipt number.
+The configured reversal result and timeout URLs are required.
 
 ```php
 $reversal = $mpesa->reversal(
